@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use gpui::*;
 mod app;
 mod assets;
+mod components;
+mod session;
 mod utils;
 
 fn window_options(cx: &App) -> WindowOptions {

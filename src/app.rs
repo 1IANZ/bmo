@@ -1,29 +1,12 @@
 use std::time::Duration;
 
 use gpui::{
-    AppContext, Context, Div, Entity, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    MouseUpEvent, ParentElement, Render, Styled, Task, Window, div, prelude::FluentBuilder, px,
-    rgb, svg, white,
+    AppContext, Context, Div, Entity, InteractiveElement, IntoElement, MouseButton, MouseUpEvent,
+    ParentElement, Render, Styled, Task, Window, div, prelude::FluentBuilder, px, rgb, svg, white,
 };
 
-use crate::utils::format_time;
-
-// pomorodo session info
-pub struct PomorodoSession {
-    session_count: u8,
-    break_duration: u32,
-    focus_duration: u32,
-}
-
-impl Default for PomorodoSession {
-    fn default() -> Self {
-        return Self {
-            session_count: 4,
-            break_duration: 60 * 10, // ten minutes
-            focus_duration: 60 * 60, // one hour
-        };
-    }
-}
+use crate::components::Segment;
+use crate::session::PomorodoSession;
 
 pub struct TimerApp {
     remaining_seconds: u32,                   // count down
@@ -33,6 +16,7 @@ pub struct TimerApp {
     is_running: bool,
     is_paused: bool,
     is_break: bool,
+    has_finished: bool,
 }
 
 impl TimerApp {
@@ -45,12 +29,13 @@ impl TimerApp {
             is_paused: false,
             is_running: false,
             is_break: false,
+            has_finished: false,
         };
     }
 
     // moves on to the next session
     // returns if there was a new session to go to
-    fn roll_over(&mut self, cx: &Context<Self>) -> bool {
+    fn roll_over(&mut self, cx: &mut Context<Self>) -> bool {
         let current_session = self.current_session.read(cx);
         if self.session_progress == current_session.session_count {
             return false;
@@ -66,19 +51,23 @@ impl TimerApp {
             current_session.focus_duration
         };
 
+        cx.notify();
         return true;
     }
 
-    fn start_timer(&mut self, cx: &mut Context<Self>) {
-        if self.is_running {
-            // do smth else
+    fn start_timer(&mut self, cx: &mut Context<Self>, fresh_start: bool) {
+        if self.is_running && fresh_start {
             return;
         }
 
         // set initials
         self.is_running = true;
-        self.is_break = false;
-        self.roll_over(cx);
+        self.has_finished = false;
+
+        if fresh_start {
+            self.is_break = false;
+            self.roll_over(cx);
+        }
 
         // spawn timer task
         self.timer_task = Some(cx.spawn(async move |entity, cx| {
@@ -97,6 +86,7 @@ impl TimerApp {
                         entity.is_break = !entity.is_break;
                         if !entity.roll_over(cx) {
                             // reset internals
+                            entity.has_finished = true;
                             entity.is_running = false;
                             entity.is_paused = false;
                             cx.notify();
@@ -117,13 +107,46 @@ impl TimerApp {
         }));
     }
 
+    fn pause_timer(&mut self, cx: &mut Context<Self>) {
+        self.is_paused = true;
+        cx.notify();
+    }
+
+    fn stop_timer(&mut self, cx: &mut Context<Self>) {
+        self.is_running = true;
+        cx.notify();
+    }
+
     fn handle_action_button(
         &mut self,
         _event: &MouseUpEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.start_timer(cx);
+        println!(
+            "State: running={}, is_paused={}",
+            self.is_running, self.is_paused
+        );
+
+        if !self.is_running {
+            self.start_timer(cx, true);
+        } else {
+            if self.is_paused {
+                self.is_paused = false;
+                self.start_timer(cx, false);
+            } else {
+                self.pause_timer(cx);
+            }
+        }
+    }
+
+    fn handle_stop_button(
+        &mut self,
+        _event: &MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.stop_timer(cx);
     }
 
     fn button(&self, fill: bool) -> Div {
@@ -132,6 +155,10 @@ impl TimerApp {
             .border_color(rgb(0x5F5F5F))
             .rounded_full()
             .p_3()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_center()
             .when(fill, |el| el.bg(rgb(0x242424)))
             .hover(|e| e.bg(rgb(0x141414)));
     }
@@ -140,11 +167,11 @@ impl TimerApp {
         return div()
             .flex_row()
             .flex()
-            .gap_1()
+            .gap_2()
             .children((1..session_count + 1).into_iter().map(|index| {
                 div()
-                    .h(px(9.))
-                    .w(px(3.))
+                    .h(px(12.))
+                    .w(px(5.))
                     .bg(rgb(if currently_at >= index {
                         0xE93131
                     } else {
@@ -154,7 +181,7 @@ impl TimerApp {
             }));
     }
 
-    fn timer_widget(&self) -> Div {
+    fn timer_widget(&self, cx: &mut Context<Self>) -> Div {
         return div()
             .flex()
             .flex_col()
@@ -162,21 +189,24 @@ impl TimerApp {
             .justify_center()
             .items_center()
             // state icon
-            .child(svg().path("svg/eye.svg").size_8().text_color(white()))
-            // timer count
             .child(
-                div()
-                    .child(format_time(self.remaining_seconds))
-                    .text_3xl()
-                    .font_weight(FontWeight::MEDIUM)
+                svg()
+                    .when(!self.is_break, |el| el.path("svg/eye.svg"))
+                    .when(self.is_break, |el| el.path("svg/coffee.svg"))
+                    .size_8()
                     .text_color(white()),
             )
+            // timer count
+            .child(Segment::div(self.remaining_seconds, self.is_break).w_full())
             // focus session count
-            .child(self.focus_sessions_indicator(4, 2))
+            .child(self.focus_sessions_indicator(
+                self.current_session.read(cx).session_count,
+                self.session_progress,
+            ))
             // state text
             .child(
                 div()
-                    .child("FOCUS")
+                    .child(if self.is_break { "BREAK" } else { "FOCUS" })
                     .text_color(rgb(0x4F4F4F))
                     .text_size(px(10.)),
             )
@@ -188,24 +218,34 @@ impl TimerApp {
     }
 
     fn bottom_button_row(&self, cx: &mut Context<Self>) -> Div {
+        let action_text = if self.is_running {
+            if self.is_paused { "CONTINUE" } else { "PAUSE" }
+        } else {
+            "START"
+        };
         return div()
             .flex()
             .flex_row()
             .gap_4()
-            .child(
-                self.button(false).child(
-                    svg()
-                        .path("svg/plus.svg")
-                        .size_8()
-                        .text_color(rgb(0x545454)),
-                ),
-            )
+            .when(self.is_running, |el| {
+                el.child(
+                    self.button(false)
+                        .child(
+                            svg()
+                                .path("svg/stop.svg")
+                                .size_8()
+                                .text_color(rgb(0x545454)),
+                        )
+                        .on_mouse_up(MouseButton::Left, cx.listener(Self::handle_stop_button)),
+                )
+            })
             .child(
                 self.button(true)
-                    .child("START")
                     .text_color(white())
                     .flex_grow()
                     .text_center()
+                    .child(div().child(action_text))
+                    .when(!self.is_running, |el| el.items_start())
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::handle_action_button)),
             )
             .child(
@@ -230,6 +270,6 @@ impl Render for TimerApp {
             .gap_4()
             .justify_around()
             .items_center()
-            .children([self.timer_widget(), self.bottom_button_row(cx).w_full()]);
+            .children([self.timer_widget(cx), self.bottom_button_row(cx).w_full()]);
     }
 }
