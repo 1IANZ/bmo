@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AppContext, Context, Div, Entity, InteractiveElement, IntoElement, MouseButton, MouseUpEvent,
@@ -9,7 +9,7 @@ use crate::components::Segment;
 use crate::session::PomodoroSession;
 
 pub struct TimerApp {
-    remaining_seconds: u32,                   // count down
+    remaining_seconds: u128,                  // count down
     session_progress: u8,                     // how many sessions have we passed
     current_session: Entity<PomodoroSession>, // active session
     timer_task: Option<Task<()>>,             // active timer
@@ -71,9 +71,16 @@ impl TimerApp {
 
         // spawn timer task
         self.timer_task = Some(cx.spawn(async move |entity, cx| {
+            let mut time_at_the_beginning = Instant::now();
             loop {
-                // wait one sec
-                cx.background_executor().timer(Duration::from_secs(1)).await;
+                // wait 200 ms
+                cx.background_executor()
+                    .timer(Duration::from_millis(200))
+                    .await;
+
+                // get how much time has passed
+                let time_passed = (Instant::now() - time_at_the_beginning).as_millis();
+                time_at_the_beginning = Instant::now();
 
                 // process
                 let running = entity.update(cx, |entity, cx| {
@@ -93,7 +100,11 @@ impl TimerApp {
                             return false;
                         };
                     } else {
-                        entity.remaining_seconds -= 1;
+                        if time_passed > entity.remaining_seconds {
+                            entity.remaining_seconds = 0;
+                        } else {
+                            entity.remaining_seconds -= time_passed;
+                        }
                     }
 
                     cx.notify();
@@ -123,11 +134,6 @@ impl TimerApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        println!(
-            "State: running={}, is_paused={}",
-            self.is_running, self.is_paused
-        );
-
         if !self.is_running {
             self.start_timer(cx, true);
         } else {
@@ -223,6 +229,7 @@ impl TimerApp {
         } else {
             "START"
         };
+
         return div()
             .flex()
             .flex_row()
@@ -239,6 +246,7 @@ impl TimerApp {
                         .on_mouse_up(MouseButton::Left, cx.listener(Self::handle_stop_button)),
                 )
             })
+            // Action button
             .child(
                 self.button(true)
                     .text_color(white())
@@ -246,7 +254,10 @@ impl TimerApp {
                     .text_center()
                     .child(div().child(action_text))
                     .when(!self.is_running, |el| el.items_start())
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::handle_action_button)),
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(TimerApp::handle_action_button),
+                    ),
             )
             .child(
                 self.button(false).child(

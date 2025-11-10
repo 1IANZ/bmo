@@ -9,7 +9,7 @@ pub enum Segment {
 }
 
 impl Segment {
-    pub fn div(time: u32, on_break: bool) -> Div {
+    pub fn div(time: u128, on_break: bool) -> Div {
         let formatted_time = format_time(time);
         let values = into_segments(formatted_time);
         return segments(values, on_break);
